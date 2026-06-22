@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+
+# Environment variables — contains credentials, never commit
+.env
+
+# SQLite databases (deprecated, replaced by MongoDB)
+*.db

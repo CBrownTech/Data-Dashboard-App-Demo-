@@ -1,0 +1,131 @@
+{
+  "info": {
+    "name": "ImpactDash API",
+    "description": "Test collection for the ImpactDash nonprofit dashboard backend.\n\nBase URL: http://127.0.0.1:5000/api\n\nSeed demo data:\n  cd bank_app/backend\n  uv run python seed_nonprofits.py\n\nDemo logins (password demo1234):\n  admin@platform.org — platform_admin\n  sarah@rivervalley.org — nonprofit_user",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://127.0.0.1:5000/api", "type": "string" },
+    { "key": "token", "value": "", "type": "string" },
+    { "key": "nonprofit_id", "value": "1", "type": "string" },
+    { "key": "program_id", "value": "1", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "Health Check",
+      "request": { "method": "GET", "url": "{{base_url}}/health" }
+    },
+    {
+      "name": "POST Login (platform admin)",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/login",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"admin@platform.org\",\n  \"password\": \"demo1234\"\n}"
+        }
+      }
+    },
+    {
+      "name": "GET Nonprofits",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/nonprofits",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+      }
+    },
+    {
+      "name": "POST Create Nonprofit",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/nonprofits",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{token}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"Community Arts Collective\",\n  \"mission\": \"Bring arts education to underserved neighborhoods.\",\n  \"location\": \"Seattle, WA\"\n}"
+        }
+      }
+    },
+    {
+      "name": "GET Dashboard",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/nonprofits/{{nonprofit_id}}/dashboard",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+      }
+    },
+    {
+      "name": "PUT Metrics",
+      "request": {
+        "method": "PUT",
+        "url": "{{base_url}}/nonprofits/{{nonprofit_id}}/metrics",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{token}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"donorCount\": 900,\n  \"totalDonations\": 130000,\n  \"activeVolunteers\": 160,\n  \"volunteerHours\": 4500,\n  \"fundingGoal\": 200000,\n  \"fundingRaised\": 150000,\n  \"grantsReceived\": 48000\n}"
+        }
+      }
+    },
+    {
+      "name": "POST Program",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/nonprofits/{{nonprofit_id}}/programs",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{token}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"After-School Arts\",\n  \"status\": \"active\",\n  \"participants\": 45,\n  \"budget\": 15000\n}"
+        }
+      }
+    },
+    {
+      "name": "GET PDF Report",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/nonprofits/{{nonprofit_id}}/report",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+      }
+    },
+    {
+      "name": "GET Users (platform admin)",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/users",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+      }
+    },
+    {
+      "name": "GET CSV Import Template",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/nonprofits/import/template",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+      }
+    },
+    {
+      "name": "POST CSV Import (auto mode)",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/nonprofits/import?mode=auto",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            { "key": "file", "type": "file", "src": "nonprofit-import-template.csv" }
+          ]
+        },
+        "description": "Template includes nonprofit KPIs, email_opens columns, donor rows, and program rows."
+      }
+    }
+  ]
+}

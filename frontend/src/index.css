@@ -1,0 +1,63 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
+
+/* ── Runtime CSS variables ──────────────────────────────────────────────────
+   These live outside @theme so they can change at runtime.
+   .dark (toggled on <html>) swaps the surface tokens; brand blues stay fixed. */
+:root {
+  --citi-surface: #e5e7eb;
+  --citi-card:    #f0efef;
+  --citi-text:    #1E293B;
+  --citi-muted:   #64748B;
+  --citi-border:  #E2E8F0;
+  --citi-heading: #001A5E;   /* navy in light mode */
+}
+
+.dark {
+  --citi-surface: #0F172A;
+  --citi-card:    #1E293B;
+  --citi-text:    #F1F5F9;
+  --citi-muted:   #94A3B8;
+  --citi-border:  #334155;
+  --citi-heading: #F1F5F9;   /* near-white in dark mode */
+}
+
+/* ── Tailwind design tokens ─────────────────────────────────────────────────
+   @theme generates utility classes (bg-citi-surface, text-citi-text, etc.).
+   Surface tokens point to the CSS variables above so they react to .dark.
+   Brand blues are static — they look good on both light and dark backgrounds. */
+@theme {
+  /* Brand blues — static */
+  --color-citi-navy:    #001A5E;
+  --color-citi-blue:    #003087;
+  --color-citi-action:  #0066CC;
+  --color-citi-light:   #56B4E0;
+  --color-citi-red:     #CC0000;
+
+  /* Surface tokens — dynamic via CSS variables */
+  --color-citi-surface: var(--citi-surface);
+  --color-citi-card:    var(--citi-card);
+  --color-citi-text:    var(--citi-text);
+  --color-citi-muted:   var(--citi-muted);
+  --color-citi-border:  var(--citi-border);
+  --color-citi-heading: var(--citi-heading);
+
+  /* Admin console — dark terminal theme, always dark */
+  --color-admin-bg:      #070d1a;
+  --color-admin-surface: #0d1526;
+  --color-admin-card:    #111e35;
+  --color-admin-border:  #1e3a5f;
+  --color-admin-accent:  #00c6ff;
+  --color-admin-amber:   #f0a500;
+  --color-admin-text:    #e2eaf8;
+  --color-admin-muted:   #5a7a9e;
+  --color-admin-green:   #00d98b;
+  --color-admin-red:     #ff4757;
+
+  /* Admin monospace font */
+  --font-admin: 'JetBrains Mono', monospace;
+}
+
+body {
+  font-family: 'DM Sans', sans-serif;
+}
