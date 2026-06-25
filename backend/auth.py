@@ -7,7 +7,7 @@ import jwt
 from dotenv import load_dotenv
 from flask import g, jsonify, request
 
-load_dotenv()
+load_dotenv(override=True)
 
 JWT_SECRET = os.getenv("JWT_SECRET", "dev-jwt-secret-change-in-production")
 JWT_ALGORITHM = "HS256"

@@ -18,7 +18,7 @@ from pymongo import MongoClient
 
 # Read .env file and load its variables into os.environ.
 # This must run before os.getenv() or the variable won't be found.
-load_dotenv()
+load_dotenv(override=True)
 
 MONGO_URI = os.getenv("MONGO_URI")
 

@@ -72,6 +72,8 @@ The app will raise a clear error on startup if `MONGO_URI` is missing.
 
 **Security:** Never put real credentials in `.env.example` — use placeholders only. Real `MONGO_URI` and `JWT_SECRET` values belong in gitignored `.env` on each machine. If credentials are ever committed, rotate them immediately in MongoDB Atlas and rewrite git history before force-pushing.
 
+If startup fails with `<cluster>` in the error, a stale `MONGO_URI` shell export may be overriding `.env`; unset it (`Remove-Item Env:MONGO_URI` in PowerShell) or rely on `load_dotenv(override=True)` in `database.py`.
+
 ### MongoDB Atlas Network Access
 
 When deploying to a cloud host (e.g. Render), you must whitelist the host's IP in **MongoDB Atlas → Network Access**.
