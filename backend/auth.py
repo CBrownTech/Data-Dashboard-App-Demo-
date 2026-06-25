@@ -13,7 +13,7 @@ JWT_SECRET = os.getenv("JWT_SECRET", "dev-jwt-secret-change-in-production")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_HOURS = 24
 
-VALID_ROLES = ("platform_admin", "nonprofit_user")
+VALID_ROLES = ("platform_admin", "nonprofit_owner", "nonprofit_user")
 
 
 def resolve_role(user):

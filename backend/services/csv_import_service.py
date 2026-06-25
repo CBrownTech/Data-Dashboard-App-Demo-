@@ -49,12 +49,65 @@ METRIC_COLUMNS = {
     "email_opens_previous": "emailOpensPrevious",
 }
 
-TEMPLATE_CSV = """row_type,name,slug,mission,location,donor_count,total_donations,active_volunteers,volunteer_hours,funding_goal,funding_raised,grants_received,email_opens_current,email_opens_previous,status,participants,budget,email,donation_amount
-nonprofit,Example Nonprofit,example-nonprofit,Our mission statement,City ST,100,50000,25,1200,100000,75000,20000,12500,10800,,,,,
-donor,Jane Doe,,,,,,,,,,,,,,,jane@example.com,5000
-donor,Acme Corp,,,,,,,,,,,,,,,giving@acme.org,25000
-program,Example Program,,,,,,,,,,,,,active,50,10000,,
-"""
+CSV_COLUMNS = [
+    "row_type",
+    "name",
+    "slug",
+    "mission",
+    "location",
+    "donor_count",
+    "total_donations",
+    "active_volunteers",
+    "volunteer_hours",
+    "funding_goal",
+    "funding_raised",
+    "grants_received",
+    "email_opens_current",
+    "email_opens_previous",
+    "status",
+    "participants",
+    "budget",
+    "email",
+    "donation_amount",
+]
+
+TEMPLATE_ROWS = [
+    {
+        "row_type": "nonprofit",
+        "name": "Example Nonprofit",
+        "slug": "example-nonprofit",
+        "mission": "Our mission statement",
+        "location": "City ST",
+        "donor_count": "100",
+        "total_donations": "50000",
+        "active_volunteers": "25",
+        "volunteer_hours": "1200",
+        "funding_goal": "100000",
+        "funding_raised": "75000",
+        "grants_received": "20000",
+        "email_opens_current": "12500",
+        "email_opens_previous": "10800",
+    },
+    {
+        "row_type": "donor",
+        "name": "Jane Doe",
+        "email": "jane@example.com",
+        "donation_amount": "5000",
+    },
+    {
+        "row_type": "donor",
+        "name": "Acme Corp",
+        "email": "giving@acme.org",
+        "donation_amount": "25000",
+    },
+    {
+        "row_type": "program",
+        "name": "Example Program",
+        "status": "active",
+        "participants": "50",
+        "budget": "10000",
+    },
+]
 
 
 @dataclass
@@ -328,4 +381,8 @@ def import_csv(parsed, mode="auto", nonprofit_id=None):
 
 
 def get_template_csv():
-    return TEMPLATE_CSV
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=CSV_COLUMNS, extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(TEMPLATE_ROWS)
+    return buffer.getvalue()

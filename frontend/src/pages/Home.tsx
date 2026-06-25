@@ -1,6 +1,11 @@
 import { Link } from 'react-router-dom'
+import { useSelector } from 'react-redux'
+import type { RootState } from '../store'
 
 export default function Home() {
+  const { isAuthenticated, role } = useSelector((state: RootState) => state.auth)
+  const dashboardPath = role === 'platform_admin' ? '/nonprofits' : '/dashboard'
+
   return (
     <main className="max-w-6xl mx-auto px-6 py-20">
       <div className="text-center mb-16">
@@ -13,12 +18,21 @@ export default function Home() {
           for every nonprofit they support.
         </p>
         <div className="flex gap-4 justify-center">
-          <Link
-            to="/signin"
-            className="bg-citi-action text-white font-semibold px-8 py-4 rounded-sm text-lg hover:bg-citi-blue transition-all duration-150 active:scale-95"
-          >
-            Sign In
-          </Link>
+          {isAuthenticated ? (
+            <Link
+              to={dashboardPath}
+              className="bg-citi-action text-white font-semibold px-8 py-4 rounded-sm text-lg hover:bg-citi-blue transition-all duration-150 active:scale-95"
+            >
+              Go to Dashboard
+            </Link>
+          ) : (
+            <Link
+              to="/signin"
+              className="bg-citi-action text-white font-semibold px-8 py-4 rounded-sm text-lg hover:bg-citi-blue transition-all duration-150 active:scale-95"
+            >
+              Sign In
+            </Link>
+          )}
           <Link
             to="/about"
             className="bg-citi-card border border-citi-border text-citi-heading px-8 py-4 rounded-sm text-lg hover:bg-citi-surface transition-all duration-150 active:scale-95"

@@ -7,7 +7,92 @@ export interface Nonprofit {
   slug: string
   mission: string
   location: string
+  referenceCode?: string
+  sourceCode?: string
   isActive: boolean
+}
+
+export type DashboardCategory = 'email' | 'p2pTexting' | 'callTime' | 'donors'
+
+export const DASHBOARD_CATEGORIES: { value: DashboardCategory; label: string }[] = [
+  { value: 'email', label: 'Email' },
+  { value: 'p2pTexting', label: 'P2P Texting' },
+  { value: 'callTime', label: 'Call Time' },
+  { value: 'donors', label: 'Donors' },
+]
+
+export interface CategoryDonationStats {
+  donationsRaised: number
+  donationCount: number
+  avgGift: number
+  shareOfTotal: number
+}
+
+export interface DonationChannels {
+  email: number
+  p2pTexting: number
+  callTime: number
+  other: number
+  total: number
+}
+
+export const EMPTY_DONATION_STATS: CategoryDonationStats = {
+  donationsRaised: 0,
+  donationCount: 0,
+  avgGift: 0,
+  shareOfTotal: 0,
+}
+
+export function resolveDonationChannels(
+  dashboard: Pick<DashboardData, 'donationChannels' | 'categories' | 'summary' | 'metrics'>,
+): DonationChannels {
+  if (dashboard.donationChannels) return dashboard.donationChannels
+  const breakdown = dashboard.categories?.donors?.channelBreakdown
+  if (breakdown) return breakdown
+  const total = dashboard.summary?.totalDonations ?? dashboard.metrics?.totalDonations ?? 0
+  return { email: 0, p2pTexting: 0, callTime: 0, other: total, total }
+}
+
+export function withDonationStats<T extends Partial<CategoryDonationStats>>(data: T): T & CategoryDonationStats {
+  return { ...EMPTY_DONATION_STATS, ...data }
+}
+
+export interface EmailCategoryData extends CategoryDonationStats {
+  opensCurrent: number
+  opensPrevious: number
+  opensChange: number
+  opensChangePct: number
+  trend: 'up' | 'down' | 'flat'
+}
+
+export interface P2pTextingCategoryData extends CategoryDonationStats {
+  messagesSent: number
+  responses: number
+  optOuts: number
+  responseRate: number
+}
+
+export interface CallTimeCategoryData extends CategoryDonationStats {
+  totalHours: number
+  callsMade: number
+  contactsReached: number
+  avgDurationMinutes: number
+}
+
+export interface DonorsCategoryData {
+  donorCount: number
+  totalDonations: number
+  highestDonation: number
+  biggestDonorName: string
+  donors: Donor[]
+  channelBreakdown?: DonationChannels
+}
+
+export interface DashboardCategories {
+  email: EmailCategoryData
+  p2pTexting: P2pTextingCategoryData
+  callTime: CallTimeCategoryData
+  donors: DonorsCategoryData
 }
 
 export interface Program {
@@ -36,8 +121,55 @@ export interface DashboardInsights {
   emailOpensTrend: 'up' | 'down' | 'flat'
 }
 
+export type WeeklyTrend = 'up' | 'down' | 'flat'
+
+export interface WeeklyComparison {
+  current: number
+  previous: number
+  change: number
+  changePct: number
+  trend: WeeklyTrend
+}
+
+export interface WeeklyWeekInfo {
+  weekStart: string
+  weekEnd: string
+  label: string
+  reportLabel?: string
+}
+
+export interface WeeklySnapshot extends WeeklyWeekInfo {
+  emailOpens: number
+  p2pMessagesSent: number
+  p2pResponses: number
+  p2pOptOuts: number
+  callHours: number
+  callsMade: number
+  contactsReached: number
+  donationsTotal: number
+  emailDonations: number
+  p2pDonations: number
+  callDonations: number
+  donorCount: number
+  activeVolunteers: number
+  volunteerHours: number
+  fundingRaised: number
+}
+
+export interface WeeklyMetrics {
+  selectedWeekStart: string | null
+  availableWeeks: WeeklyWeekInfo[]
+  reportingWeek: WeeklyWeekInfo | null
+  priorWeek: WeeklyWeekInfo | null
+  history: WeeklySnapshot[]
+  comparisons: Record<string, WeeklyComparison>
+  summaries: string[]
+}
+
 export interface DashboardData {
   nonprofit: Nonprofit
+  viewMode?: 'aggregate' | 'weekly'
+  selectedWeekStart?: string | null
   summary: {
     donorCount: number
     totalDonations: number
@@ -63,8 +195,30 @@ export interface DashboardData {
     emailOpensChangePct: number
   }
   insights: DashboardInsights
+  categories?: DashboardCategories
+  donationChannels?: DonationChannels
   donors: Donor[]
   programs: Program[]
+  weeklyMetrics?: WeeklyMetrics | null
+}
+
+export interface PublicNonprofit {
+  nonprofitId: number
+  name: string
+  location: string
+}
+
+export type OrgMemberRole = 'nonprofit_owner' | 'nonprofit_user'
+
+export interface OrgMember {
+  userId: number
+  name: string
+  email: string
+  role: OrgMemberRole
+}
+
+export function orgMemberRoleLabel(role: string): string {
+  return role === 'nonprofit_owner' ? 'Owner' : 'Member'
 }
 
 export interface PlatformUser {
@@ -89,19 +243,102 @@ export interface ImportResult {
 
 interface NonprofitState {
   nonprofits: Nonprofit[]
+  publicNonprofits: PublicNonprofit[]
+  orgMembers: OrgMember[]
+  orgMembersNonprofitId: number | null
   dashboard: DashboardData | null
   users: PlatformUser[]
+  membersLoading: boolean
+  membersError: string | null
   loading: boolean
   error: string | null
 }
 
 const initialState: NonprofitState = {
   nonprofits: [],
+  publicNonprofits: [],
+  orgMembers: [],
+  orgMembersNonprofitId: null,
   dashboard: null,
   users: [],
+  membersLoading: false,
+  membersError: null,
   loading: false,
   error: null,
 }
+
+export const fetchPublicNonprofits = createAsyncThunk('nonprofit/publicList', async (_, { rejectWithValue }) => {
+  try {
+    const res = await api.get('/nonprofits/public')
+    return res.data as PublicNonprofit[]
+  } catch (err: any) {
+    return rejectWithValue(err.response?.data?.error ?? 'Failed to load organizations')
+  }
+})
+
+export const fetchOrgMembers = createAsyncThunk(
+  'nonprofit/orgMembers',
+  async (nonprofitId: number, { rejectWithValue }) => {
+    try {
+      const res = await api.get(`/nonprofits/${nonprofitId}/members`)
+      return { nonprofitId, members: res.data as OrgMember[] }
+    } catch (err: any) {
+      return rejectWithValue(err.response?.data?.error ?? 'Failed to load members')
+    }
+  }
+)
+
+export const createOrgMember = createAsyncThunk(
+  'nonprofit/createOrgMember',
+  async (
+    {
+      nonprofitId,
+      data,
+    }: {
+      nonprofitId: number
+      data: { name: string; email: string; password: string; role: OrgMemberRole }
+    },
+    { rejectWithValue }
+  ) => {
+    try {
+      const res = await api.post(`/nonprofits/${nonprofitId}/members`, data)
+      return res.data as OrgMember
+    } catch (err: any) {
+      return rejectWithValue(err.response?.data?.error ?? 'Failed to add member')
+    }
+  }
+)
+
+export const updateOrgMember = createAsyncThunk(
+  'nonprofit/updateOrgMember',
+  async (
+    {
+      nonprofitId,
+      userId,
+      data,
+    }: { nonprofitId: number; userId: number; data: { name?: string; role?: OrgMemberRole } },
+    { rejectWithValue }
+  ) => {
+    try {
+      const res = await api.put(`/nonprofits/${nonprofitId}/members/${userId}`, data)
+      return res.data as OrgMember
+    } catch (err: any) {
+      return rejectWithValue(err.response?.data?.error ?? 'Failed to update member')
+    }
+  }
+)
+
+export const deleteOrgMember = createAsyncThunk(
+  'nonprofit/deleteOrgMember',
+  async ({ nonprofitId, userId }: { nonprofitId: number; userId: number }, { rejectWithValue }) => {
+    try {
+      await api.delete(`/nonprofits/${nonprofitId}/members/${userId}`)
+      return userId
+    } catch (err: any) {
+      return rejectWithValue(err.response?.data?.error ?? 'Failed to remove member')
+    }
+  }
+)
 
 export const fetchNonprofits = createAsyncThunk('nonprofit/list', async (_, { rejectWithValue }) => {
   try {
@@ -126,9 +363,13 @@ export const createNonprofit = createAsyncThunk(
 
 export const fetchDashboard = createAsyncThunk(
   'nonprofit/dashboard',
-  async (nonprofitId: number, { rejectWithValue }) => {
+  async (
+    { nonprofitId, weekStart }: { nonprofitId: number; weekStart?: string },
+    { rejectWithValue },
+  ) => {
     try {
-      const res = await api.get(`/nonprofits/${nonprofitId}/dashboard`)
+      const params = weekStart ? { weekStart } : undefined
+      const res = await api.get(`/nonprofits/${nonprofitId}/dashboard`, { params })
       return res.data as DashboardData
     } catch (err: any) {
       return rejectWithValue(err.response?.data?.error ?? 'Failed to load dashboard')
@@ -246,6 +487,37 @@ const nonprofitSlice = createSlice({
       })
       .addCase(fetchUsers.fulfilled, (state, action) => {
         state.users = action.payload
+      })
+      .addCase(fetchPublicNonprofits.fulfilled, (state, action) => {
+        state.publicNonprofits = action.payload
+      })
+      .addCase(fetchOrgMembers.pending, (state, action) => {
+        state.membersLoading = true
+        state.membersError = null
+        state.orgMembersNonprofitId = action.meta.arg
+      })
+      .addCase(fetchOrgMembers.fulfilled, (state, action) => {
+        state.membersLoading = false
+        if (action.meta.arg !== action.payload.nonprofitId) return
+        state.orgMembersNonprofitId = action.payload.nonprofitId
+        state.orgMembers = action.payload.members
+        state.membersError = null
+      })
+      .addCase(fetchOrgMembers.rejected, (state, action) => {
+        state.membersLoading = false
+        state.membersError = (action.payload as string) ?? 'Failed to load members'
+        state.orgMembers = []
+        state.orgMembersNonprofitId = null
+      })
+      .addCase(createOrgMember.fulfilled, (state, action) => {
+        state.orgMembers.push(action.payload)
+      })
+      .addCase(updateOrgMember.fulfilled, (state, action) => {
+        const idx = state.orgMembers.findIndex((m) => m.userId === action.payload.userId)
+        if (idx >= 0) state.orgMembers[idx] = action.payload
+      })
+      .addCase(deleteOrgMember.fulfilled, (state, action) => {
+        state.orgMembers = state.orgMembers.filter((m) => m.userId !== action.payload)
       })
   },
 })

@@ -34,6 +34,14 @@ def login():
         return jsonify({"error": str(e)}), 401
 
 
+@nonprofit_bp.route("/nonprofits/public", methods=["GET"])
+def list_nonprofits_public():
+    try:
+        return jsonify(nonprofit_service.list_nonprofits_public())
+    except ValueError as e:
+        return _value_error_response(e)
+
+
 @nonprofit_bp.route("/nonprofits", methods=["GET"])
 @require_auth
 def list_nonprofits():
@@ -82,7 +90,8 @@ def update_nonprofit(nonprofit_id):
 @require_auth
 def get_dashboard(nonprofit_id):
     try:
-        return jsonify(nonprofit_service.get_dashboard(nonprofit_id))
+        week_start = request.args.get("weekStart")
+        return jsonify(nonprofit_service.get_dashboard(nonprofit_id, week_start=week_start))
     except ValueError as e:
         return _value_error_response(e)
 
@@ -146,13 +155,55 @@ def delete_program(nonprofit_id, program_id):
 @require_auth
 def download_report(nonprofit_id):
     try:
-        pdf_bytes = nonprofit_service.generate_report_pdf(nonprofit_id)
+        week_start = request.args.get("weekStart")
+        pdf_bytes = nonprofit_service.generate_report_pdf(nonprofit_id, week_start=week_start)
         filename = "nonprofit-dashboard-report.pdf"
+        if week_start:
+            filename = f"nonprofit-dashboard-report-{week_start}.pdf"
         return Response(
             pdf_bytes,
             mimetype="application/pdf",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
+    except ValueError as e:
+        return _value_error_response(e)
+
+
+@nonprofit_bp.route("/nonprofits/<int:nonprofit_id>/members", methods=["GET"])
+@require_auth
+def list_org_members(nonprofit_id):
+    try:
+        return jsonify(nonprofit_service.list_org_members(nonprofit_id))
+    except ValueError as e:
+        return _value_error_response(e)
+
+
+@nonprofit_bp.route("/nonprofits/<int:nonprofit_id>/members", methods=["POST"])
+@require_auth
+def create_org_member(nonprofit_id):
+    data = request.get_json() or {}
+    try:
+        result = nonprofit_service.create_org_member(nonprofit_id, data)
+        return jsonify(result), 201
+    except ValueError as e:
+        return _value_error_response(e)
+
+
+@nonprofit_bp.route("/nonprofits/<int:nonprofit_id>/members/<int:user_id>", methods=["PUT"])
+@require_auth
+def update_org_member(nonprofit_id, user_id):
+    data = request.get_json() or {}
+    try:
+        return jsonify(nonprofit_service.update_org_member(nonprofit_id, user_id, data))
+    except ValueError as e:
+        return _value_error_response(e)
+
+
+@nonprofit_bp.route("/nonprofits/<int:nonprofit_id>/members/<int:user_id>", methods=["DELETE"])
+@require_auth
+def delete_org_member(nonprofit_id, user_id):
+    try:
+        return jsonify(nonprofit_service.delete_org_member(nonprofit_id, user_id))
     except ValueError as e:
         return _value_error_response(e)
 

@@ -34,7 +34,7 @@ class NonprofitRepo:
             "name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}
         })
 
-    def add(self, name, slug, mission, location):
+    def add(self, name, slug, mission, location, reference_code="", source_code=""):
         nonprofit_id = _next_id(self._db, "nonprofits")
         doc = {
             "nonprofit_id": nonprofit_id,
@@ -42,6 +42,8 @@ class NonprofitRepo:
             "slug": slug,
             "mission": mission,
             "location": location,
+            "reference_code": reference_code or "",
+            "source_code": source_code or "",
             "is_active": True,
             "created_at": datetime.now(timezone.utc),
         }
@@ -49,7 +51,7 @@ class NonprofitRepo:
         return doc
 
     def update(self, nonprofit_id, updates):
-        allowed = {"name", "slug", "mission", "location", "is_active"}
+        allowed = {"name", "slug", "mission", "location", "is_active", "reference_code", "source_code"}
         payload = {k: v for k, v in updates.items() if k in allowed}
         if not payload:
             return self.get_by_id(nonprofit_id)

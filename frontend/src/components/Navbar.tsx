@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, NavLink } from 'react-router-dom'
 import { useSelector, useDispatch } from 'react-redux'
 import type { RootState } from '../store'
 import { logout } from '../store/authSlice'
@@ -15,6 +15,29 @@ function useDarkMode() {
   }
 
   return { dark, toggle }
+}
+
+function navItemClass(isActive: boolean) {
+  return [
+    'relative font-medium transition-colors pb-0.5',
+    isActive ? 'text-citi-heading' : 'text-citi-muted hover:text-citi-heading',
+  ].join(' ')
+}
+
+function NavbarNavItem({ to, end, label }: { to: string; end?: boolean; label: string }) {
+  return (
+    <NavLink to={to} end={end} className={({ isActive }) => navItemClass(isActive)}>
+      {({ isActive }) => (
+        <span className="flex flex-col items-center gap-1">
+          {label}
+          <span
+            className={`h-0.5 w-full rounded-full transition-colors ${isActive ? 'bg-citi-action' : 'bg-transparent'}`}
+            aria-hidden
+          />
+        </span>
+      )}
+    </NavLink>
+  )
 }
 
 export default function Navbar() {
@@ -36,23 +59,24 @@ export default function Navbar() {
         </Link>
 
         <div className="flex gap-6 items-center">
-          <Link to="/" className="text-citi-muted hover:text-citi-heading transition-colors font-medium">Home</Link>
-          <Link to="/about" className="text-citi-muted hover:text-citi-heading transition-colors font-medium">About</Link>
-          <Link
+          <NavbarNavItem to="/" end label="Home" />
+          <NavbarNavItem to="/about" label="About" />
+          <NavbarNavItem
             to={isAuthenticated ? '/dashboard' : '/signin'}
-            className="text-citi-muted hover:text-citi-heading transition-colors font-medium"
-          >
-            Dashboard
-          </Link>
+            label="Dashboard"
+          />
           {role === 'platform_admin' && (
-            <Link to="/nonprofits" className="text-citi-muted hover:text-citi-heading transition-colors font-medium">
-              Nonprofits
-            </Link>
+            <NavbarNavItem to="/nonprofits" label="Nonprofits" />
+          )}
+          {(role === 'nonprofit_owner' || role === 'nonprofit_user') && (
+            <NavbarNavItem to="/organization" label="Organization" />
           )}
 
-          {isAuthenticated ? (
+          {isAuthenticated && (
             <>
-              <span className="text-citi-muted text-sm border-l border-citi-border pl-6">{username}</span>
+              {username && (
+                <span className="text-citi-muted text-sm border-l border-citi-border pl-6">{username}</span>
+              )}
               <button
                 onClick={() => dispatch(logout())}
                 className="border border-citi-border text-citi-text px-4 py-2 rounded-sm hover:bg-citi-surface transition-colors text-sm font-medium"
@@ -60,13 +84,6 @@ export default function Navbar() {
                 Sign Out
               </button>
             </>
-          ) : (
-            <Link
-              to="/signin"
-              className="bg-citi-action text-white font-semibold px-4 py-2 rounded-sm hover:bg-citi-blue transition-colors text-sm"
-            >
-              Sign In
-            </Link>
           )}
 
           <button

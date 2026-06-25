@@ -4,15 +4,32 @@ import { toast } from 'react-toastify'
 import api from '../api'
 import Spinner from '../components/Spinner'
 import DashboardCharts from '../components/DashboardCharts'
+import CategoryDashboardPanel from '../components/CategoryDashboardPanel'
 import type { AppDispatch, RootState } from '../store'
 import {
-  fetchDashboard,
-  fetchNonprofits,
-  updateMetrics,
+  DASHBOARD_CATEGORIES,
   createProgram,
   deleteProgram,
+  fetchDashboard,
+  fetchNonprofits,
+  resolveDonationChannels,
+  type DashboardCategory,
   type Program,
+  type WeeklyMetrics,
+  type WeeklyTrend,
+  type WeeklyWeekInfo,
 } from '../store/nonprofitSlice'
+
+function resolveWeekOptions(weeklyMetrics?: WeeklyMetrics | null): WeeklyWeekInfo[] {
+  if (!weeklyMetrics) return []
+  if (weeklyMetrics.availableWeeks?.length) return weeklyMetrics.availableWeeks
+  return (weeklyMetrics.history ?? []).map((row) => ({
+    weekStart: row.weekStart,
+    weekEnd: row.weekEnd,
+    label: row.label,
+    reportLabel: row.reportLabel,
+  }))
+}
 
 function StatCard({ label, value, hint }: { label: string; value: number | string; hint?: string }) {
   return (
@@ -28,27 +45,50 @@ function money(n: number) {
   return n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })
 }
 
+function WowChip({
+  label,
+  comparison,
+  formatValue,
+}: {
+  label: string
+  comparison: { current: number; changePct: number; trend: WeeklyTrend } | undefined
+  formatValue: (n: number) => string
+}) {
+  if (!comparison) return null
+  const trendClass =
+    comparison.trend === 'up'
+      ? 'border-green-200 bg-green-50 text-green-800'
+      : comparison.trend === 'down'
+        ? 'border-red-200 bg-red-50 text-red-800'
+        : 'border-citi-border bg-citi-surface text-citi-muted'
+  const sign = comparison.changePct > 0 ? '+' : ''
+  return (
+    <div className={`rounded-xl border p-4 ${trendClass}`}>
+      <p className="text-xs uppercase tracking-wider opacity-80">{label}</p>
+      <p className="text-xl font-bold mt-1">{formatValue(comparison.current)}</p>
+      <p className="text-xs mt-1">{sign}{comparison.changePct}% vs prior week</p>
+    </div>
+  )
+}
+
 export default function Dashboard() {
   const dispatch = useDispatch<AppDispatch>()
   const { role, nonprofitId } = useSelector((state: RootState) => state.auth)
-  const { dashboard, nonprofits, loading } = useSelector((state: RootState) => state.nonprofit)
+  const { dashboard, nonprofits, loading, error } = useSelector((state: RootState) => state.nonprofit)
 
+  const canEdit = role === 'platform_admin'
   const [selectedId, setSelectedId] = useState<number | null>(nonprofitId)
+  const [selectedCategory, setSelectedCategory] = useState<DashboardCategory>('email')
   const [downloading, setDownloading] = useState(false)
-  const [showMetricsForm, setShowMetricsForm] = useState(false)
+  const [selectedWeekStart, setSelectedWeekStart] = useState<string | null>(null)
   const [showProgramForm, setShowProgramForm] = useState(false)
-  const [metricsForm, setMetricsForm] = useState({
-    donorCount: 0,
-    totalDonations: 0,
-    activeVolunteers: 0,
-    volunteerHours: 0,
-    fundingGoal: 0,
-    fundingRaised: 0,
-    grantsReceived: 0,
-    emailOpensCurrent: 0,
-    emailOpensPrevious: 0,
-  })
   const [programForm, setProgramForm] = useState({ name: '', status: 'active', participants: 0, budget: 0 })
+
+  const activeDashboardId = role === 'platform_admin' ? selectedId : nonprofitId
+
+  function dashboardFetchArgs(id: number) {
+    return { nonprofitId: id, weekStart: selectedWeekStart ?? undefined }
+  }
 
   useEffect(() => {
     if (role === 'platform_admin') {
@@ -63,36 +103,33 @@ export default function Dashboard() {
   }, [role, selectedId, nonprofits])
 
   useEffect(() => {
-    const id = role === 'platform_admin' ? selectedId : nonprofitId
-    if (id) dispatch(fetchDashboard(id))
-  }, [dispatch, role, nonprofitId, selectedId])
+    setSelectedWeekStart(null)
+  }, [activeDashboardId])
 
   useEffect(() => {
-    if (dashboard?.metrics) {
-      setMetricsForm({
-        donorCount: dashboard.metrics.donorCount,
-        totalDonations: dashboard.metrics.totalDonations,
-        activeVolunteers: dashboard.metrics.activeVolunteers,
-        volunteerHours: dashboard.metrics.volunteerHours,
-        fundingGoal: dashboard.metrics.fundingGoal,
-        fundingRaised: dashboard.metrics.fundingRaised,
-        grantsReceived: dashboard.metrics.grantsReceived,
-        emailOpensCurrent: dashboard.metrics.emailOpensCurrent,
-        emailOpensPrevious: dashboard.metrics.emailOpensPrevious,
-      })
+    if (activeDashboardId) {
+      dispatch(fetchDashboard(dashboardFetchArgs(activeDashboardId)))
     }
-  }, [dashboard])
+  }, [dispatch, activeDashboardId, selectedWeekStart])
+
+  useEffect(() => {
+    if (error) toast.error(error)
+  }, [error])
 
   async function downloadReport() {
-    const id = role === 'platform_admin' ? selectedId : nonprofitId
-    if (!id) return
+    if (!activeDashboardId) return
     setDownloading(true)
     try {
-      const res = await api.get(`/nonprofits/${id}/report`, { responseType: 'blob' })
+      const week =
+        selectedWeekStart ?? dashboard?.weeklyMetrics?.selectedWeekStart ?? undefined
+      const res = await api.get(`/nonprofits/${activeDashboardId}/report`, {
+        responseType: 'blob',
+        params: week ? { weekStart: week } : undefined,
+      })
       const blob = new Blob([res.data], { type: 'application/pdf' })
       const url = window.URL.createObjectURL(blob)
       const link = document.createElement('a')
-      const date = new Date().toISOString().slice(0, 10)
+      const date = week ?? new Date().toISOString().slice(0, 10)
       link.href = url
       link.download = `impactdash-report-${date}.pdf`
       document.body.appendChild(link)
@@ -107,27 +144,12 @@ export default function Dashboard() {
     }
   }
 
-  async function handleSaveMetrics(e: React.FormEvent) {
-    e.preventDefault()
-    const id = role === 'platform_admin' ? selectedId : nonprofitId
-    if (!id) return
-    try {
-      await dispatch(updateMetrics({ nonprofitId: id, data: metricsForm })).unwrap()
-      await dispatch(fetchDashboard(id)).unwrap()
-      setShowMetricsForm(false)
-      toast.success('Metrics updated.')
-    } catch {
-      toast.error('Could not update metrics.')
-    }
-  }
-
   async function handleAddProgram(e: React.FormEvent) {
     e.preventDefault()
-    const id = role === 'platform_admin' ? selectedId : nonprofitId
-    if (!id) return
+    if (!activeDashboardId) return
     try {
-      await dispatch(createProgram({ nonprofitId: id, data: programForm })).unwrap()
-      await dispatch(fetchDashboard(id)).unwrap()
+      await dispatch(createProgram({ nonprofitId: activeDashboardId, data: programForm })).unwrap()
+      await dispatch(fetchDashboard(dashboardFetchArgs(activeDashboardId))).unwrap()
       setProgramForm({ name: '', status: 'active', participants: 0, budget: 0 })
       setShowProgramForm(false)
       toast.success('Program added.')
@@ -137,11 +159,10 @@ export default function Dashboard() {
   }
 
   async function handleDeleteProgram(program: Program) {
-    const id = role === 'platform_admin' ? selectedId : nonprofitId
-    if (!id || !confirm(`Delete program "${program.name}"?`)) return
+    if (!activeDashboardId || !confirm(`Delete program "${program.name}"?`)) return
     try {
-      await dispatch(deleteProgram({ nonprofitId: id, programId: program.programId })).unwrap()
-      await dispatch(fetchDashboard(id)).unwrap()
+      await dispatch(deleteProgram({ nonprofitId: activeDashboardId, programId: program.programId })).unwrap()
+      await dispatch(fetchDashboard(dashboardFetchArgs(activeDashboardId))).unwrap()
       toast.success('Program deleted.')
     } catch {
       toast.error('Could not delete program.')
@@ -164,7 +185,15 @@ export default function Dashboard() {
     )
   }
 
-  const { nonprofit, summary, metrics, programs } = dashboard
+  const { nonprofit, summary, metrics, programs, categories, weeklyMetrics } = dashboard
+  const weekOptions = resolveWeekOptions(weeklyMetrics)
+  const hasWeeklyData = weekOptions.length > 0
+  const activeWeekStart =
+    selectedWeekStart
+    ?? weeklyMetrics?.selectedWeekStart
+    ?? weekOptions[weekOptions.length - 1]?.weekStart
+    ?? ''
+  const donationChannels = resolveDonationChannels(dashboard)
   const insights = dashboard.insights ?? {
     highestDonation: metrics.highestDonation ?? 0,
     biggestDonorName: metrics.biggestDonorName ?? '',
@@ -189,6 +218,21 @@ export default function Dashboard() {
           <h1 className="text-3xl font-bold text-citi-heading tracking-tight">{nonprofit.name}</h1>
           <p className="text-citi-muted mt-1">{nonprofit.mission || 'Nonprofit dashboard'}</p>
           {nonprofit.location && <p className="text-citi-muted text-sm mt-1">{nonprofit.location}</p>}
+          {weeklyMetrics?.reportingWeek?.reportLabel && (
+            <p className="text-sm text-citi-blue font-medium mt-2">
+              Showing data for {weeklyMetrics.reportingWeek.reportLabel}
+            </p>
+          )}
+          {(nonprofit.referenceCode || nonprofit.sourceCode) && (
+            <div className="flex flex-wrap gap-4 mt-2 text-sm text-citi-muted">
+              {nonprofit.referenceCode && (
+                <span><span className="font-medium text-citi-text">Reference:</span> {nonprofit.referenceCode}</span>
+              )}
+              {nonprofit.sourceCode && (
+                <span><span className="font-medium text-citi-text">Source:</span> {nonprofit.sourceCode}</span>
+              )}
+            </div>
+          )}
         </div>
         <div className="flex flex-col sm:items-end gap-2">
           {role === 'platform_admin' && nonprofits.length > 1 && (
@@ -202,6 +246,36 @@ export default function Dashboard() {
               ))}
             </select>
           )}
+          {hasWeeklyData ? (
+            <label className="flex flex-col gap-1 text-sm w-full sm:w-auto">
+              <span className="text-citi-muted text-xs font-medium">Week</span>
+              <select
+                value={activeWeekStart}
+                onChange={(e) => setSelectedWeekStart(e.target.value)}
+                className="bg-citi-card border border-citi-border rounded-lg px-3 py-2 text-sm text-citi-text"
+                aria-label="Select week"
+              >
+                {[...weekOptions].reverse().map((week) => (
+                  <option key={week.weekStart} value={week.weekStart}>
+                    {week.reportLabel ?? week.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : (
+            <p className="text-citi-muted text-sm max-w-xs sm:text-right">
+              Weekly history not available for this organization.
+            </p>
+          )}
+          <select
+            value={selectedCategory}
+            onChange={(e) => setSelectedCategory(e.target.value as DashboardCategory)}
+            className="bg-citi-card border border-citi-border rounded-lg px-3 py-2 text-sm text-citi-text"
+          >
+            {DASHBOARD_CATEGORIES.map((c) => (
+              <option key={c.value} value={c.value}>{c.label}</option>
+            ))}
+          </select>
           <button
             type="button"
             onClick={downloadReport}
@@ -220,6 +294,71 @@ export default function Dashboard() {
         <StatCard label="Funding Progress" value={`${metrics.fundingProgress}%`} hint={`${money(metrics.fundingRaised)} of ${money(metrics.fundingGoal)}`} />
       </div>
 
+      {hasWeeklyData && weeklyMetrics && (
+        <section className="bg-citi-card border border-citi-border rounded-xl p-6 shadow-sm space-y-4">
+          <div>
+            <h2 className="text-citi-heading font-semibold text-lg">Weekly Performance</h2>
+            <p className="text-citi-muted text-sm mt-1">
+              {weeklyMetrics.reportingWeek?.reportLabel
+                ?? weeklyMetrics.reportingWeek?.label
+                ?? 'Current week'}
+              {weeklyMetrics.priorWeek ? ' compared to prior week' : ''}
+            </p>
+          </div>
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+            <WowChip
+              label="Email Opens"
+              comparison={weeklyMetrics.comparisons.emailOpens}
+              formatValue={(n) => n.toLocaleString()}
+            />
+            <WowChip
+              label="P2P Messages"
+              comparison={weeklyMetrics.comparisons.p2pMessagesSent}
+              formatValue={(n) => n.toLocaleString()}
+            />
+            <WowChip
+              label="Call Hours"
+              comparison={weeklyMetrics.comparisons.callHours}
+              formatValue={(n) => n.toFixed(1)}
+            />
+            <WowChip
+              label="Weekly Donations"
+              comparison={weeklyMetrics.comparisons.donationsTotal}
+              formatValue={money}
+            />
+            <WowChip
+              label="Funding Raised"
+              comparison={weeklyMetrics.comparisons.fundingRaised}
+              formatValue={money}
+            />
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-citi-surface text-citi-muted text-left">
+                <tr>
+                  <th className="px-4 py-2 font-medium">Week</th>
+                  <th className="px-4 py-2 font-medium">Email Opens</th>
+                  <th className="px-4 py-2 font-medium">P2P Msgs</th>
+                  <th className="px-4 py-2 font-medium">Call Hrs</th>
+                  <th className="px-4 py-2 font-medium">Donations</th>
+                </tr>
+              </thead>
+              <tbody>
+                {weeklyMetrics.history.map((row) => (
+                  <tr key={row.weekStart} className="border-t border-citi-border">
+                    <td className="px-4 py-2 text-citi-heading">{row.label}</td>
+                    <td className="px-4 py-2">{row.emailOpens.toLocaleString()}</td>
+                    <td className="px-4 py-2">{row.p2pMessagesSent.toLocaleString()}</td>
+                    <td className="px-4 py-2">{row.callHours.toFixed(1)}</td>
+                    <td className="px-4 py-2">{money(row.donationsTotal)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
       {(insights.biggestDonorName || insights.highestDonation > 0 || insights.emailOpensCurrent > 0) && (
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <StatCard
@@ -236,8 +375,8 @@ export default function Dashboard() {
             value={`${emailChangeSign}${insights.emailOpensChange.toLocaleString()} opens`}
             hint={
               insights.emailOpensPrevious > 0
-                ? `${insights.emailOpensCurrent.toLocaleString()} vs ${insights.emailOpensPrevious.toLocaleString()} (${emailChangeSign}${insights.emailOpensChangePct}%)`
-                : `${insights.emailOpensCurrent.toLocaleString()} current opens`
+                ? `${insights.emailOpensCurrent.toLocaleString()} vs ${insights.emailOpensPrevious.toLocaleString()} prior week (${emailChangeSign}${insights.emailOpensChangePct}%)`
+                : `${insights.emailOpensCurrent.toLocaleString()} current week opens`
             }
           />
         </div>
@@ -258,55 +397,45 @@ export default function Dashboard() {
         </div>
       </div>
 
-      <DashboardCharts dashboard={dashboard} />
-
-      <div className="flex flex-wrap gap-3">
-        <button
-          type="button"
-          onClick={() => setShowMetricsForm(!showMetricsForm)}
-          className="border border-citi-border text-citi-text px-4 py-2 rounded-sm hover:bg-citi-surface text-sm font-medium"
-        >
-          {showMetricsForm ? 'Cancel Edit' : 'Edit Metrics'}
-        </button>
-        <button
-          type="button"
-          onClick={() => setShowProgramForm(!showProgramForm)}
-          className="bg-citi-action text-white px-4 py-2 rounded-sm hover:bg-citi-blue text-sm font-medium"
-        >
-          {showProgramForm ? 'Cancel' : 'Add Program'}
-        </button>
-      </div>
-
-      {showMetricsForm && (
-        <form onSubmit={handleSaveMetrics} className="bg-citi-card border border-citi-border rounded-xl p-6 shadow-sm grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {([
-            ['donorCount', 'Donor Count'],
-            ['totalDonations', 'Total Donations'],
-            ['activeVolunteers', 'Active Volunteers'],
-            ['volunteerHours', 'Volunteer Hours'],
-            ['fundingGoal', 'Funding Goal'],
-            ['fundingRaised', 'Funding Raised'],
-            ['grantsReceived', 'Grants Received'],
-            ['emailOpensCurrent', 'Email Opens (Current)'],
-            ['emailOpensPrevious', 'Email Opens (Previous)'],
-          ] as const).map(([key, label]) => (
-            <div key={key}>
-              <label className="block text-citi-muted text-xs mb-1">{label}</label>
-              <input
-                type="number"
-                value={metricsForm[key]}
-                onChange={(e) => setMetricsForm({ ...metricsForm, [key]: Number(e.target.value) })}
-                className="w-full border border-citi-border rounded-lg px-3 py-2 text-sm"
-              />
-            </div>
-          ))}
-          <div className="sm:col-span-2 lg:col-span-4">
-            <button type="submit" className="bg-citi-action text-white px-5 py-2 rounded-sm text-sm font-semibold">Save Metrics</button>
+      {categories && activeDashboardId && (
+        <section className="space-y-4">
+          <div>
+            <h2 className="text-citi-heading font-semibold text-lg">Channel Dashboard</h2>
+            <p className="text-citi-muted text-sm mt-1">
+              {DASHBOARD_CATEGORIES.find((c) => c.value === selectedCategory)?.label} metrics and donation performance
+            </p>
           </div>
-        </form>
+          <CategoryDashboardPanel
+            category={selectedCategory}
+            categories={categories}
+            donationChannels={donationChannels}
+            nonprofitId={activeDashboardId}
+            canEdit={canEdit}
+            weekStart={
+              selectedWeekStart
+              ?? weeklyMetrics?.selectedWeekStart
+              ?? undefined
+            }
+            weeklyComparisons={weeklyMetrics?.comparisons}
+          />
+        </section>
       )}
 
-      {showProgramForm && (
+      <DashboardCharts dashboard={dashboard} />
+
+      {canEdit && (
+        <div className="flex flex-wrap gap-3">
+          <button
+            type="button"
+            onClick={() => setShowProgramForm(!showProgramForm)}
+            className="bg-citi-action text-white px-4 py-2 rounded-sm hover:bg-citi-blue text-sm font-medium"
+          >
+            {showProgramForm ? 'Cancel' : 'Add Program'}
+          </button>
+        </div>
+      )}
+
+      {canEdit && showProgramForm && (
         <form onSubmit={handleAddProgram} className="bg-citi-card border border-citi-border rounded-xl p-6 shadow-sm grid sm:grid-cols-2 gap-4">
           <div>
             <label className="block text-citi-muted text-xs mb-1">Program Name</label>
@@ -364,7 +493,7 @@ export default function Dashboard() {
                 <th className="px-6 py-3 font-medium">Status</th>
                 <th className="px-6 py-3 font-medium">Participants</th>
                 <th className="px-6 py-3 font-medium">Budget</th>
-                <th className="px-6 py-3 font-medium"></th>
+                {canEdit && <th className="px-6 py-3 font-medium"></th>}
               </tr>
             </thead>
             <tbody>
@@ -374,19 +503,21 @@ export default function Dashboard() {
                   <td className="px-6 py-3 capitalize">{p.status}</td>
                   <td className="px-6 py-3">{p.participants.toLocaleString()}</td>
                   <td className="px-6 py-3">{money(p.budget)}</td>
-                  <td className="px-6 py-3">
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteProgram(p)}
-                      className="text-red-600 hover:underline text-xs"
-                    >
-                      Delete
-                    </button>
-                  </td>
+                  {canEdit && (
+                    <td className="px-6 py-3">
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteProgram(p)}
+                        className="text-red-600 hover:underline text-xs"
+                      >
+                        Delete
+                      </button>
+                    </td>
+                  )}
                 </tr>
               ))}
               {programs.length === 0 && (
-                <tr><td colSpan={5} className="px-6 py-8 text-center text-citi-muted">No programs yet.</td></tr>
+                <tr><td colSpan={canEdit ? 5 : 4} className="px-6 py-8 text-center text-citi-muted">No programs yet.</td></tr>
               )}
             </tbody>
           </table>

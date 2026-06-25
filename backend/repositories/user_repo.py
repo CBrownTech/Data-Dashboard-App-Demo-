@@ -60,6 +60,14 @@ class UserRepo:
         # list() materializes the cursor into a Python list of dicts.
         return list(self._db.users.find())
 
+    def list_for_nonprofit(self, nonprofit_id):
+        return list(
+            self._db.users.find({
+                "nonprofit_id": nonprofit_id,
+                "is_deleted": {"$ne": True},
+            }).sort("name", 1)
+        )
+
     def soft_delete(self, user_id):
         # update_one finds the first matching document and applies the update.
         # $set only touches the specified fields — all other fields are unchanged.
@@ -90,7 +98,7 @@ class UserRepo:
         )
 
     def update_user(self, user_id, updates):
-        allowed = {"role", "nonprofit_id", "is_admin", "name", "email"}
+        allowed = {"role", "nonprofit_id", "is_admin", "name", "email", "password_hash"}
         payload = {k: v for k, v in updates.items() if k in allowed}
         if not payload:
             return self.get_user_by_id(user_id)

@@ -39,10 +39,12 @@ function EmptyChart({ message }: { message: string }) {
 
 interface Props {
   dashboard: DashboardData
+  programs?: DashboardData['programs']
 }
 
-export default function DashboardCharts({ dashboard }: Props) {
-  const { metrics, programs, summary } = dashboard
+export default function DashboardCharts({ dashboard, programs: programsOverride }: Props) {
+  const { metrics, summary } = dashboard
+  const programs = programsOverride ?? dashboard.programs
 
   const fundingRemaining = Math.max(metrics.fundingGoal - metrics.fundingRaised, 0)
   const fundingData = [
