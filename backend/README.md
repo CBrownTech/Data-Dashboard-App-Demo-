@@ -1,6 +1,8 @@
 # ImpactDash — Backend
 
-A Flask REST API backed by Google BigQuery, using the `google-cloud-bigquery` client. The backend powers **ImpactDash**, a multi-tenant nonprofit dashboard platform: platform admins manage multiple organizations and their members, nonprofit owners manage their org’s member roster, and each nonprofit user views their own KPI dashboard. The API follows a strict three-layer architecture: routes handle HTTP, services enforce business rules, and repositories own all database access.
+A Flask REST API with a pluggable data layer: it runs on **Google BigQuery** for production/cloud use, or on a local **SQLite** file for zero-setup demos and development — selected with the `DB_BACKEND` env var. The backend powers **ImpactDash**, a multi-tenant nonprofit dashboard platform: platform admins manage multiple organizations and their members, nonprofit owners manage their org’s member roster, and each nonprofit user views their own KPI dashboard. The API follows a strict three-layer architecture: routes handle HTTP, services enforce business rules, and repositories own all database access.
+
+> **Just want to run the demo?** Copy `.env.example` to `.env` (it defaults to `DB_BACKEND=sqlite`), then `uv sync && uv run python seed_nonprofits.py && uv run python run.py`. No cloud account or credentials required. See [Running Locally](#running-locally).
 
 ---
 
@@ -10,8 +12,9 @@ A Flask REST API backed by Google BigQuery, using the `google-cloud-bigquery` cl
 |---------|------|
 | **Flask** | HTTP framework and route registration |
 | **flask-cors** | Cross-origin requests for the Vite frontend |
-| **google-cloud-bigquery** | BigQuery client — all DB reads and writes go through repositories |
-| **Google BigQuery** | Primary database (cloud-hosted data warehouse) |
+| **google-cloud-bigquery** | BigQuery client — used when `DB_BACKEND=bigquery` (production path) |
+| **Google BigQuery** | Cloud database (data warehouse) for production/shared use |
+| **sqlite3** (stdlib) | Local file database — used when `DB_BACKEND=sqlite` (default; demos/dev) |
 | **python-dotenv** | Loads credentials from `.env` so they stay out of version control |
 | **PyJWT** | JWT tokens for authenticated nonprofit routes |
 | **Werkzeug** | Password hashing (`generate_password_hash` / `check_password_hash`) |
@@ -28,12 +31,16 @@ backend/
 ├── nonprofit_routes.py     # HTTP layer — health, login, nonprofits, members, import, report
 ├── auth.py                 # JWT helpers and @require_auth decorator
 ├── seed_nonprofits.py      # Demo nonprofits, programs, donors, users; --backfill-only for weekly snapshots
-├── setup_bigquery.py       # Creates the BigQuery dataset and tables (idempotent; --drop to recreate)
+├── setup_bigquery.py       # Creates the BigQuery dataset and tables (BigQuery mode only; --drop to recreate)
 ├── postman_tests.json      # Postman collection for API testing
+├── local_demo.db           # Local SQLite data file (auto-created in sqlite mode; gitignored)
 ├── .env                    # Local credentials — never committed (see .gitignore)
 ├── .env.example            # Template — copy to .env and fill in your values
 ├── db/
-│   └── database.py         # BigQuery client setup and query/insert/update/next_id helpers
+│   ├── database.py         # Backend dispatcher + query/insert/update/upsert/next_id helpers
+│   ├── params.py           # Backend-neutral query parameter (param / array_param)
+│   ├── bigquery_backend.py # BigQuery implementation (INSERT/UPDATE/MERGE DML)
+│   └── sqlite_backend.py   # Local SQLite implementation (auto-creates schema)
 ├── repositories/
 │   ├── user_repo.py        # users table
 │   ├── nonprofit_repo.py   # nonprofits table
@@ -58,8 +65,15 @@ Credentials are stored in a `.env` file that is **never committed to git**.
 cp .env.example .env
 ```
 
-**Step 2** — open `.env` and fill in your values:
+**Step 2** — open `.env` and choose a backend. The default runs the local demo with no cloud setup:
 ```
+DB_BACKEND=sqlite
+JWT_SECRET=your-secret-key-change-in-production
+```
+
+To use BigQuery instead, set `DB_BACKEND=bigquery` and provide the BigQuery settings:
+```
+DB_BACKEND=bigquery
 GOOGLE_APPLICATION_CREDENTIALS=/absolute/path/to/service-account.json
 BIGQUERY_PROJECT=your-gcp-project-id
 BIGQUERY_DATASET=bank_db
@@ -68,25 +82,30 @@ JWT_SECRET=your-secret-key-change-in-production
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `GOOGLE_APPLICATION_CREDENTIALS` | Yes | Absolute path to a GCP service-account JSON key with BigQuery access |
-| `BIGQUERY_PROJECT` | Yes | GCP project id that owns the BigQuery dataset |
+| `DB_BACKEND` | No | `sqlite` (default, local demo) or `bigquery` |
+| `SQLITE_DB_PATH` | No | SQLite file path when `DB_BACKEND=sqlite` (defaults to `backend/local_demo.db`) |
+| `GOOGLE_APPLICATION_CREDENTIALS` | Only for BigQuery | Absolute path to a GCP service-account JSON key |
+| `BIGQUERY_PROJECT` | Only for BigQuery | GCP project id that owns the dataset |
 | `BIGQUERY_DATASET` | No | Dataset name holding the app tables (defaults to `bank_db`) |
 | `JWT_SECRET` | No | HS256 signing key for JWTs (defaults to a dev secret if omitted) |
 
-The app will raise a clear error on startup if `BIGQUERY_PROJECT` is missing.
+When `DB_BACKEND=bigquery`, the app raises a clear error on startup if `BIGQUERY_PROJECT` is missing.
 
 **Security:** Never put real credentials in `.env.example` — use placeholders only. The service-account JSON key and real `JWT_SECRET` value belong in gitignored locations on each machine (`GOOGLE_APPLICATION_CREDENTIALS` should point outside the repo). If a key is ever committed, disable/rotate it immediately in **GCP → IAM & Admin → Service Accounts** and rewrite git history before force-pushing.
 
-### BigQuery Access
+### Database Backends
 
-Authentication uses a **service account** rather than IP allowlisting.
+The repositories are written once against the dispatcher in `db/database.py`; `DB_BACKEND` decides which implementation runs. Both expose the same operations, so switching backends requires no code changes.
+
+**`sqlite` (default)** — Stores data in a local file (`backend/local_demo.db`, gitignored), auto-creating the schema on first use. No credentials, no network. Ideal for demos and local development. Not intended for multi-user or production traffic.
+
+**`bigquery`** — The production path. Authentication uses a **service account** rather than IP allowlisting:
 
 1. In **GCP → IAM & Admin → Service Accounts**, create a service account and grant it **BigQuery Data Editor** (read/write rows) and **BigQuery Job User** (run queries) on the project.
-2. Create a JSON key for that account and download it.
-3. Point `GOOGLE_APPLICATION_CREDENTIALS` at the key file's absolute path.
+2. Create a JSON key for that account and download it; point `GOOGLE_APPLICATION_CREDENTIALS` at its absolute path.
+3. Create the dataset and tables once with `uv run python setup_bigquery.py`.
 
-- **Development / demo**: a single service-account key on your machine is sufficient.
-- **Production**: prefer workload identity / attached service accounts over long-lived JSON keys, and scope the account to only the dataset it needs.
+Prefer workload identity / attached service accounts over long-lived JSON keys in production, and scope the account to only the dataset it needs.
 
 ---
 
@@ -98,7 +117,7 @@ Authentication uses a **service account** rather than IP allowlisting.
 
 **Services (`nonprofit_service.py`, `auth_service.py`, etc.)** — Business rules. Validates inputs, enforces RBAC (platform admin, nonprofit owner, nonprofit user), aggregates dashboard data, coordinates org member management, CSV import, and triggers PDF generation.
 
-**Repositories (`*_repo.py`)** — Database only. Each repository builds parameterized BigQuery SQL and calls the shared helpers in `db/database.py` (`query`, `query_one`, `insert_row`, `update_row`, `dml`, `next_id`). Reads return plain dicts and writes use `INSERT`/`UPDATE`/`MERGE` DML, so no query logic exists anywhere outside these files.
+**Repositories (`*_repo.py`)** — Database only. Each repository builds parameterized SQL and calls the shared helpers in `db/database.py` (`query`, `query_one`, `insert_row`, `update_row`, `upsert`, `dml`, `next_id`), which dispatch to the active backend (BigQuery or SQLite). Reads return plain dicts and writes go through `INSERT`/`UPDATE`/`MERGE` (BigQuery) or their SQLite equivalents, so no query logic exists anywhere outside these files.
 
 ### Authentication and Roles
 
@@ -237,7 +256,7 @@ Re-running `seed_nonprofits.py` re-links demo owners and members to the newly cr
 
 ## Seed Data
 
-First-time setup only — create the dataset and tables (idempotent):
+BigQuery mode only — create the dataset and tables first (idempotent; skip this in SQLite mode, where the schema is auto-created):
 
 ```bash
 cd impactdash_app/backend
@@ -291,14 +310,19 @@ After re-seeding, sign out and sign back in so JWT/session `nonprofitId` matches
 
 ## Running Locally
 
+**Local demo (default — SQLite, no cloud setup):**
+
 ```bash
 cd impactdash_app/backend
-cp .env.example .env        # then fill in BIGQUERY_PROJECT + GOOGLE_APPLICATION_CREDENTIALS (and optionally JWT_SECRET)
+cp .env.example .env        # defaults to DB_BACKEND=sqlite
 uv sync                     # install dependencies
-uv run python setup_bigquery.py    # first run only: create dataset + tables
-uv run python seed_nonprofits.py   # optional: load demo data
+uv run python seed_nonprofits.py   # load demo data (auto-creates the SQLite schema)
 uv run python run.py        # starts at http://127.0.0.1:5000
 ```
+
+No `setup_bigquery.py` step is needed in SQLite mode — the schema is created automatically in `backend/local_demo.db`.
+
+**BigQuery mode (when credentials are available):** set `DB_BACKEND=bigquery` (plus `BIGQUERY_PROJECT` and `GOOGLE_APPLICATION_CREDENTIALS`) in `.env`, then run `uv run python setup_bigquery.py` once before seeding. Everything else is identical.
 
 Run only **one** backend process on port 5000. Multiple stale `run.py` instances can bind the same port and serve outdated code (e.g. missing `weeklyMetrics` on the dashboard or old PDF text encoding). If the week picker is empty, members fail to load, or PDFs show `?` instead of dashes:
 

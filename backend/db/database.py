@@ -1,77 +1,58 @@
-''' db/database.py — BigQuery connection and query helpers.
+''' db/database.py — data-access dispatcher.
 
-This replaces the previous MongoDB (PyMongo) setup. The repositories call the
-helpers defined here instead of talking to a database driver directly, so the
-service and route layers are unaffected by the switch.
+The repositories call the helpers here (query, query_one, dml, insert_row,
+update_row, upsert, next_id, truncate) and never talk to a database driver
+directly, so the service, route, and auth layers are unaffected by which backend
+is active.
 
-HOW THE CONNECTION WORKS:
-  1. load_dotenv() reads the .env file and injects BIGQUERY_PROJECT,
-     BIGQUERY_DATASET, and GOOGLE_APPLICATION_CREDENTIALS into the environment.
-  2. bigquery.Client() authenticates using the service-account JSON key pointed
-     at by GOOGLE_APPLICATION_CREDENTIALS — once at module load.
-  3. Repositories call query()/query_one()/insert_row()/update_row()/next_id().
+BACKEND SELECTION (DB_BACKEND env var):
+  - "sqlite"   (default) — a local SQLite file. Zero cloud setup; ideal for demos
+                and local development. Requires no credentials.
+  - "bigquery"           — Google BigQuery. The production path. Requires
+                BIGQUERY_PROJECT and GOOGLE_APPLICATION_CREDENTIALS.
 
-WHY DML (INSERT/UPDATE/MERGE) INSTEAD OF THE STREAMING API:
-  Rows written with BigQuery's streaming insert API sit in a streaming buffer
-  and cannot be UPDATE-d or DELETE-d for up to ~90 minutes. This app frequently
-  inserts a row and mutates it moments later (e.g. create a nonprofit, then
-  upsert its metrics), so every write here uses an INSERT/UPDATE/MERGE DML
-  statement, whose rows are immediately queryable and mutable.
-
-WHY INTEGER IDS VIA MAX()+1:
-  MongoDB used a `counters` collection for auto-increment ids. BigQuery has no
-  auto-increment, so next_id() computes MAX(id)+1. This preserves the integer-id
-  contract the frontend depends on. It is not safe under concurrent writers, but
-  it is correct for this demo's single-writer load.
+Both backends expose the same operations; the repositories are written once
+against this dispatcher. Reads return plain dicts; writes go through
+INSERT/UPDATE/MERGE (or the SQLite equivalents). See db/bigquery_backend.py and
+db/sqlite_backend.py.
 '''
 import os
 
 from dotenv import load_dotenv
-from google.cloud import bigquery
 
-# Read .env and load its variables into os.environ before we read them.
+# Re-export the backend-neutral parameter helpers so repositories can keep
+# importing them from db.database.
+from db.params import Param, array_param, param  # noqa: F401
+
+# Read .env before consulting the environment.
 load_dotenv(override=True)
 
+DB_BACKEND = os.getenv("DB_BACKEND", "sqlite").strip().lower()
+
+# BigQuery settings (only required when DB_BACKEND=bigquery).
 PROJECT = os.getenv("BIGQUERY_PROJECT")
 DATASET = os.getenv("BIGQUERY_DATASET", "bank_db")
 
-if not PROJECT:
+if DB_BACKEND == "bigquery":
+    from db import bigquery_backend as _backend
+    _backend.configure(PROJECT, DATASET)
+elif DB_BACKEND == "sqlite":
+    from db import sqlite_backend as _backend
+    _backend.configure(os.getenv("SQLITE_DB_PATH"))
+else:
     raise RuntimeError(
-        "BIGQUERY_PROJECT is not set. Copy .env.example to .env and fill in your "
-        "GCP project id, dataset, and GOOGLE_APPLICATION_CREDENTIALS path."
+        f"Unknown DB_BACKEND={DB_BACKEND!r}. Use 'sqlite' (local demo) or 'bigquery'."
     )
-
-# The BigQuery client — created once, reused for every request. It picks up the
-# service-account credentials from GOOGLE_APPLICATION_CREDENTIALS automatically.
-_client = bigquery.Client(project=PROJECT)
-
-
-def get_client():
-    ''' Return the shared BigQuery client. '''
-    return _client
 
 
 def table(name):
-    ''' Fully-qualified `project.dataset.table` reference for use inside SQL. '''
-    return f"`{PROJECT}.{DATASET}.{name}`"
-
-
-def param(name, type_, value):
-    ''' Build a scalar query parameter, e.g. param("email", "STRING", email). '''
-    return bigquery.ScalarQueryParameter(name, type_, value)
-
-
-def array_param(name, type_, values):
-    ''' Build an array query parameter for `col IN UNNEST(@name)` clauses. '''
-    return bigquery.ArrayQueryParameter(name, type_, list(values))
+    ''' Backend-appropriate table reference for use inside SQL strings. '''
+    return _backend.table_ref(name)
 
 
 def query(sql, params=None):
     ''' Run SQL with named parameters; return rows as a list of plain dicts. '''
-    job_config = bigquery.QueryJobConfig(query_parameters=params or [])
-    job = _client.query(sql, job_config=job_config)
-    rows = job.result()
-    return [dict(row) for row in rows]
+    return _backend.execute_query(sql, params or [])
 
 
 def query_one(sql, params=None):
@@ -82,44 +63,29 @@ def query_one(sql, params=None):
 
 def dml(sql, params=None):
     ''' Run an INSERT/UPDATE/DELETE/MERGE statement; return rows affected. '''
-    job_config = bigquery.QueryJobConfig(query_parameters=params or [])
-    job = _client.query(sql, job_config=job_config)
-    job.result()
-    return job.num_dml_affected_rows or 0
+    return _backend.execute_dml(sql, params or [])
 
 
 def insert_row(table_name, row, types):
-    ''' INSERT a single row.
-
-    `row`   maps column name -> value.
-    `types` maps column name -> BigQuery scalar type (e.g. "INT64", "STRING").
-    '''
-    cols = list(row.keys())
-    col_list = ", ".join(cols)
-    val_list = ", ".join(f"@{c}" for c in cols)
-    params = [param(c, types[c], row[c]) for c in cols]
-    dml(f"INSERT INTO {table(table_name)} ({col_list}) VALUES ({val_list})", params)
+    ''' INSERT a single row. `row` maps column->value; `types` maps column->type. '''
+    return _backend.insert_row(table_name, row, types)
 
 
 def update_row(table_name, key_col, key_val, key_type, updates, types):
-    ''' UPDATE columns for the single row where key_col == key_val.
+    ''' UPDATE the single row where key_col == key_val. No-op if updates is empty. '''
+    return _backend.update_row(table_name, key_col, key_val, key_type, updates, types)
 
-    No-op (returns False) when `updates` is empty.
-    '''
-    if not updates:
-        return False
-    sets = ", ".join(f"{c}=@{c}" for c in updates)
-    params = [param(c, types[c], v) for c, v in updates.items()]
-    params.append(param("__key", key_type, key_val))
-    affected = dml(
-        f"UPDATE {table(table_name)} SET {sets} WHERE {key_col}=@__key",
-        params,
-    )
-    return affected > 0
+
+def upsert(table_name, key_col, key_val, key_type, values, types):
+    ''' Insert the row if the key is new, else update it (BQ MERGE / SQLite ON CONFLICT). '''
+    return _backend.upsert(table_name, key_col, key_val, key_type, values, types)
 
 
 def next_id(table_name, id_column):
-    ''' Return MAX(id)+1 for a table — the integer-id replacement for counters. '''
+    ''' Return MAX(id)+1 for a table — the integer-id replacement for counters.
+
+    Not safe under concurrent writers; correct for this app's single-writer load.
+    '''
     row = query_one(
         f"SELECT COALESCE(MAX({id_column}), 0) + 1 AS next_id FROM {table(table_name)}"
     )
@@ -128,4 +94,9 @@ def next_id(table_name, id_column):
 
 def truncate(table_name):
     ''' Remove all rows from a table (used by the seed script). '''
-    dml(f"TRUNCATE TABLE {table(table_name)}")
+    return _backend.truncate(table_name)
+
+
+def get_client():
+    ''' Return the underlying client (BigQuery backend only). '''
+    return _backend.get_client()

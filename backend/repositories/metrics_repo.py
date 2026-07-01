@@ -1,6 +1,6 @@
 from datetime import date, datetime, timezone
 
-from db.database import dml, insert_row, param, query, query_one, table
+from db.database import dml, insert_row, param, query, query_one, table, upsert as db_upsert
 from repositories.donor_repo import DonorRepo
 
 
@@ -142,36 +142,15 @@ class MetricsRepo:
         return {"nonprofit_id": nonprofit_id, **DEFAULT_METRICS}
 
     def upsert(self, nonprofit_id, updates):
+        # Update the row if this nonprofit already has metrics, else insert one.
+        # db_upsert dispatches to a BigQuery MERGE or a SQLite INSERT..ON CONFLICT.
         payload = {
             k: _coerce(METRIC_TYPES[k], v)
             for k, v in updates.items()
             if k in ALLOWED_METRIC_FIELDS
         }
-        now = datetime.now(timezone.utc)
-        cols = list(payload.keys())
-
-        # MERGE = update the row if this nonprofit already has metrics, else insert.
-        set_clause = ", ".join([f"{c} = @{c}" for c in cols] + ["updated_at = @updated_at"])
-        insert_cols = ["nonprofit_id", "updated_at"] + cols
-        insert_vals = ["@nonprofit_id", "@updated_at"] + [f"@{c}" for c in cols]
-
-        params = [
-            param("nonprofit_id", "INT64", nonprofit_id),
-            param("updated_at", "TIMESTAMP", now),
-        ]
-        params.extend(param(c, METRIC_TYPES[c], payload[c]) for c in cols)
-
-        dml(
-            f"""
-            MERGE {table('nonprofit_metrics')} T
-            USING (SELECT @nonprofit_id AS nonprofit_id) S
-            ON T.nonprofit_id = S.nonprofit_id
-            WHEN MATCHED THEN UPDATE SET {set_clause}
-            WHEN NOT MATCHED THEN
-                INSERT ({", ".join(insert_cols)}) VALUES ({", ".join(insert_vals)})
-            """,
-            params,
-        )
+        payload["updated_at"] = datetime.now(timezone.utc)
+        db_upsert("nonprofit_metrics", "nonprofit_id", nonprofit_id, "INT64", payload, METRIC_TYPES)
         return self.get_for_nonprofit(nonprofit_id)
 
     def seed_defaults(self, nonprofit_id, metrics):
