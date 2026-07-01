@@ -1,56 +1,68 @@
 from datetime import datetime, timezone
 
-import re
+from db.database import dml, insert_row, next_id, param, query, query_one, table, update_row
 
-from pymongo import ReturnDocument
-
-from db.database import get_mongo_db
-from repositories.user_repo import _next_id
+# Column -> BigQuery type for the programs table.
+PROGRAM_TYPES = {
+    "program_id": "INT64",
+    "nonprofit_id": "INT64",
+    "name": "STRING",
+    "status": "STRING",
+    "participants": "INT64",
+    "budget": "FLOAT64",
+    "created_at": "TIMESTAMP",
+}
 
 
 class ProgramRepo:
-    def __init__(self):
-        self._db = get_mongo_db()
-
     def list_for_nonprofit(self, nonprofit_id):
-        return list(
-            self._db.programs.find({"nonprofit_id": nonprofit_id}).sort("name", 1)
+        return query(
+            f"SELECT * FROM {table('programs')} WHERE nonprofit_id = @np ORDER BY name",
+            [param("np", "INT64", nonprofit_id)],
         )
 
     def get_by_id(self, program_id):
-        return self._db.programs.find_one({"program_id": program_id})
+        return query_one(
+            f"SELECT * FROM {table('programs')} WHERE program_id = @id LIMIT 1",
+            [param("id", "INT64", program_id)],
+        )
 
     def get_by_name(self, nonprofit_id, name):
-        return self._db.programs.find_one({
-            "nonprofit_id": nonprofit_id,
-            "name": {"$regex": f"^{re.escape(name)}$", "$options": "i"},
-        })
+        return query_one(
+            f"""SELECT * FROM {table('programs')}
+                WHERE nonprofit_id = @np AND LOWER(name) = LOWER(@name) LIMIT 1""",
+            [param("np", "INT64", nonprofit_id), param("name", "STRING", name)],
+        )
 
     def add(self, nonprofit_id, name, status, participants, budget):
-        program_id = _next_id(self._db, "programs")
+        program_id = next_id("programs", "program_id")
         doc = {
             "program_id": program_id,
             "nonprofit_id": nonprofit_id,
             "name": name,
             "status": status,
-            "participants": participants,
-            "budget": budget,
+            "participants": int(participants or 0),
+            "budget": float(budget or 0),
             "created_at": datetime.now(timezone.utc),
         }
-        self._db.programs.insert_one(doc)
-        return doc
+        insert_row("programs", doc, PROGRAM_TYPES)
+        return self.get_by_id(program_id)
 
     def update(self, program_id, updates):
         allowed = {"name", "status", "participants", "budget"}
         payload = {k: v for k, v in updates.items() if k in allowed}
         if not payload:
             return self.get_by_id(program_id)
-        return self._db.programs.find_one_and_update(
-            {"program_id": program_id},
-            {"$set": payload},
-            return_document=ReturnDocument.AFTER,
-        )
+        if "participants" in payload:
+            payload["participants"] = int(payload["participants"] or 0)
+        if "budget" in payload:
+            payload["budget"] = float(payload["budget"] or 0)
+        update_row("programs", "program_id", program_id, "INT64", payload, PROGRAM_TYPES)
+        return self.get_by_id(program_id)
 
     def delete(self, program_id):
-        result = self._db.programs.delete_one({"program_id": program_id})
-        return result.deleted_count > 0
+        affected = dml(
+            f"DELETE FROM {table('programs')} WHERE program_id = @id",
+            [param("id", "INT64", program_id)],
+        )
+        return affected > 0

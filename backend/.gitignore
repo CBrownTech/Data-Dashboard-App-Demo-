@@ -7,5 +7,5 @@ __pycache__/
 # Environment variables — contains credentials, never commit
 .env
 
-# SQLite databases (deprecated, replaced by MongoDB)
+# Local SQLite databases (legacy; the app now uses BigQuery)
 *.db

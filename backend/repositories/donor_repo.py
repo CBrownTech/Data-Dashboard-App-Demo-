@@ -1,43 +1,56 @@
-import re
 from datetime import datetime, timezone
 
-from pymongo import ReturnDocument
+from db.database import insert_row, next_id, param, query, query_one, table, update_row
 
-from db.database import get_mongo_db
-from repositories.user_repo import _next_id
+# Column -> BigQuery type for the donors table.
+DONOR_TYPES = {
+    "donor_id": "INT64",
+    "nonprofit_id": "INT64",
+    "name": "STRING",
+    "email": "STRING",
+    "donation_amount": "FLOAT64",
+    "created_at": "TIMESTAMP",
+}
 
 
 class DonorRepo:
-    def __init__(self):
-        self._db = get_mongo_db()
-
     def list_for_nonprofit(self, nonprofit_id, limit=None):
-        cursor = self._db.donors.find({"nonprofit_id": nonprofit_id}).sort("donation_amount", -1)
+        sql = (
+            f"SELECT * FROM {table('donors')} "
+            f"WHERE nonprofit_id = @np ORDER BY donation_amount DESC"
+        )
+        params = [param("np", "INT64", nonprofit_id)]
         if limit:
-            cursor = cursor.limit(limit)
-        return list(cursor)
+            sql += " LIMIT @lim"
+            params.append(param("lim", "INT64", int(limit)))
+        return query(sql, params)
 
     def get_by_id(self, donor_id):
-        return self._db.donors.find_one({"donor_id": donor_id})
+        return query_one(
+            f"SELECT * FROM {table('donors')} WHERE donor_id = @id LIMIT 1",
+            [param("id", "INT64", donor_id)],
+        )
 
     def get_by_email(self, nonprofit_id, email):
         if not email:
             return None
-        return self._db.donors.find_one({
-            "nonprofit_id": nonprofit_id,
-            "email": {"$regex": f"^{re.escape(email.strip())}$", "$options": "i"},
-        })
+        return query_one(
+            f"""SELECT * FROM {table('donors')}
+                WHERE nonprofit_id = @np AND LOWER(email) = LOWER(@email) LIMIT 1""",
+            [param("np", "INT64", nonprofit_id), param("email", "STRING", email.strip())],
+        )
 
     def get_by_name_insensitive(self, nonprofit_id, name):
         if not name:
             return None
-        return self._db.donors.find_one({
-            "nonprofit_id": nonprofit_id,
-            "name": {"$regex": f"^{re.escape(name.strip())}$", "$options": "i"},
-        })
+        return query_one(
+            f"""SELECT * FROM {table('donors')}
+                WHERE nonprofit_id = @np AND LOWER(name) = LOWER(@name) LIMIT 1""",
+            [param("np", "INT64", nonprofit_id), param("name", "STRING", name.strip())],
+        )
 
     def add(self, nonprofit_id, name, email, donation_amount):
-        donor_id = _next_id(self._db, "donors")
+        donor_id = next_id("donors", "donor_id")
         doc = {
             "donor_id": donor_id,
             "nonprofit_id": nonprofit_id,
@@ -46,16 +59,15 @@ class DonorRepo:
             "donation_amount": float(donation_amount or 0),
             "created_at": datetime.now(timezone.utc),
         }
-        self._db.donors.insert_one(doc)
-        return doc
+        insert_row("donors", doc, DONOR_TYPES)
+        return self.get_by_id(donor_id)
 
     def update(self, donor_id, updates):
         allowed = {"name", "email", "donation_amount"}
         payload = {k: v for k, v in updates.items() if k in allowed}
         if not payload:
             return self.get_by_id(donor_id)
-        return self._db.donors.find_one_and_update(
-            {"donor_id": donor_id},
-            {"$set": payload},
-            return_document=ReturnDocument.AFTER,
-        )
+        if "donation_amount" in payload:
+            payload["donation_amount"] = float(payload["donation_amount"] or 0)
+        update_row("donors", "donor_id", donor_id, "INT64", payload, DONOR_TYPES)
+        return self.get_by_id(donor_id)

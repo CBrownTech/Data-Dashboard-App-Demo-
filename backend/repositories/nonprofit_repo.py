@@ -1,41 +1,65 @@
 from datetime import datetime, timezone
 
-import re
+from db.database import (
+    array_param,
+    insert_row,
+    next_id,
+    param,
+    query,
+    query_one,
+    table,
+    update_row,
+)
 
-from pymongo import ReturnDocument
-
-from db.database import get_mongo_db
-from repositories.user_repo import _next_id
+# Column -> BigQuery type for the nonprofits table.
+NONPROFIT_TYPES = {
+    "nonprofit_id": "INT64",
+    "name": "STRING",
+    "slug": "STRING",
+    "mission": "STRING",
+    "location": "STRING",
+    "reference_code": "STRING",
+    "source_code": "STRING",
+    "is_active": "BOOL",
+    "created_at": "TIMESTAMP",
+}
 
 
 class NonprofitRepo:
-    def __init__(self):
-        self._db = get_mongo_db()
-
     def list_all(self, include_inactive=False):
-        query = {}
-        if not include_inactive:
-            query["is_active"] = True
-        return list(self._db.nonprofits.find(query).sort("name", 1))
+        where = "" if include_inactive else "WHERE is_active = TRUE"
+        return query(f"SELECT * FROM {table('nonprofits')} {where} ORDER BY name")
 
     def list_by_ids(self, nonprofit_ids):
-        if not nonprofit_ids:
+        ids = list(nonprofit_ids)
+        if not ids:
             return []
-        return list(self._db.nonprofits.find({"nonprofit_id": {"$in": list(nonprofit_ids)}}))
+        return query(
+            f"SELECT * FROM {table('nonprofits')} WHERE nonprofit_id IN UNNEST(@ids)",
+            [array_param("ids", "INT64", ids)],
+        )
 
     def get_by_id(self, nonprofit_id):
-        return self._db.nonprofits.find_one({"nonprofit_id": nonprofit_id})
+        return query_one(
+            f"SELECT * FROM {table('nonprofits')} WHERE nonprofit_id = @id LIMIT 1",
+            [param("id", "INT64", nonprofit_id)],
+        )
 
     def get_by_slug(self, slug):
-        return self._db.nonprofits.find_one({"slug": slug})
+        return query_one(
+            f"SELECT * FROM {table('nonprofits')} WHERE slug = @slug LIMIT 1",
+            [param("slug", "STRING", slug)],
+        )
 
     def get_by_name_insensitive(self, name):
-        return self._db.nonprofits.find_one({
-            "name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}
-        })
+        # Mongo regex ^name$ /i == case-insensitive equality here.
+        return query_one(
+            f"SELECT * FROM {table('nonprofits')} WHERE LOWER(name) = LOWER(@name) LIMIT 1",
+            [param("name", "STRING", name)],
+        )
 
     def add(self, name, slug, mission, location, reference_code="", source_code=""):
-        nonprofit_id = _next_id(self._db, "nonprofits")
+        nonprofit_id = next_id("nonprofits", "nonprofit_id")
         doc = {
             "nonprofit_id": nonprofit_id,
             "name": name,
@@ -47,16 +71,13 @@ class NonprofitRepo:
             "is_active": True,
             "created_at": datetime.now(timezone.utc),
         }
-        self._db.nonprofits.insert_one(doc)
-        return doc
+        insert_row("nonprofits", doc, NONPROFIT_TYPES)
+        return self.get_by_id(nonprofit_id)
 
     def update(self, nonprofit_id, updates):
         allowed = {"name", "slug", "mission", "location", "is_active", "reference_code", "source_code"}
         payload = {k: v for k, v in updates.items() if k in allowed}
         if not payload:
             return self.get_by_id(nonprofit_id)
-        return self._db.nonprofits.find_one_and_update(
-            {"nonprofit_id": nonprofit_id},
-            {"$set": payload},
-            return_document=ReturnDocument.AFTER,
-        )
+        update_row("nonprofits", "nonprofit_id", nonprofit_id, "INT64", payload, NONPROFIT_TYPES)
+        return self.get_by_id(nonprofit_id)

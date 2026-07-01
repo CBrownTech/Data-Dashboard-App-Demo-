@@ -1,6 +1,6 @@
 # ImpactDash — Backend
 
-A Flask REST API backed by MongoDB Atlas, using PyMongo. The backend powers **ImpactDash**, a multi-tenant nonprofit dashboard platform: platform admins manage multiple organizations, and each nonprofit user views and updates their own KPI dashboard. The API follows a strict three-layer architecture: routes handle HTTP, services enforce business rules, and repositories own all database access.
+A Flask REST API backed by Google BigQuery, using the `google-cloud-bigquery` client. The backend powers **ImpactDash**, a multi-tenant nonprofit dashboard platform: platform admins manage multiple organizations, and each nonprofit user views and updates their own KPI dashboard. The API follows a strict three-layer architecture: routes handle HTTP, services enforce business rules, and repositories own all database access.
 
 ---
 
@@ -10,8 +10,8 @@ A Flask REST API backed by MongoDB Atlas, using PyMongo. The backend powers **Im
 |---------|------|
 | **Flask** | HTTP framework and route registration |
 | **flask-cors** | Cross-origin requests for the Vite frontend |
-| **PyMongo** | MongoDB driver — all DB reads and writes go through repositories |
-| **MongoDB Atlas** | Primary database (cloud-hosted) |
+| **google-cloud-bigquery** | BigQuery client — all DB reads and writes go through repositories |
+| **Google BigQuery** | Primary database (cloud-hosted data warehouse) |
 | **python-dotenv** | Loads credentials from `.env` so they stay out of version control |
 | **PyJWT** | JWT tokens for authenticated nonprofit routes |
 | **Werkzeug** | Password hashing (`generate_password_hash` / `check_password_hash`) |
@@ -28,17 +28,18 @@ backend/
 ├── nonprofit_routes.py     # HTTP layer — health, login, nonprofits, import, report
 ├── auth.py                 # JWT helpers and @require_auth decorator
 ├── seed_nonprofits.py      # Demo nonprofits, programs, donors, and users
+├── setup_bigquery.py       # Creates the BigQuery dataset and tables (idempotent; --drop to recreate)
 ├── postman_tests.json      # Postman collection for API testing
 ├── .env                    # Local credentials — never committed (see .gitignore)
 ├── .env.example            # Template — copy to .env and fill in your values
 ├── db/
-│   └── database.py         # MongoClient setup and get_mongo_db() factory
+│   └── database.py         # BigQuery client setup and query/insert/update/next_id helpers
 ├── repositories/
-│   ├── user_repo.py        # users collection
-│   ├── nonprofit_repo.py   # nonprofits collection
-│   ├── program_repo.py     # programs collection
-│   ├── metrics_repo.py     # nonprofit_metrics collection
-│   └── donor_repo.py       # donors collection
+│   ├── user_repo.py        # users table
+│   ├── nonprofit_repo.py   # nonprofits table
+│   ├── program_repo.py     # programs table
+│   ├── metrics_repo.py     # nonprofit_metrics + nonprofit_weekly_metrics tables
+│   └── donor_repo.py       # donors table
 └── services/
     ├── auth_service.py         # Login and credential validation
     ├── nonprofit_service.py      # RBAC, dashboard aggregation, CRUD
@@ -59,23 +60,31 @@ cp .env.example .env
 
 **Step 2** — open `.env` and fill in your values:
 ```
-MONGO_URI=mongodb+srv://<username>:<password>@<cluster>.mongodb.net/<dbname>
+GOOGLE_APPLICATION_CREDENTIALS=/absolute/path/to/service-account.json
+BIGQUERY_PROJECT=your-gcp-project-id
+BIGQUERY_DATASET=bank_db
 JWT_SECRET=your-secret-key-change-in-production
 ```
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `MONGO_URI` | Yes | MongoDB Atlas connection string |
+| `GOOGLE_APPLICATION_CREDENTIALS` | Yes | Absolute path to a GCP service-account JSON key with BigQuery access |
+| `BIGQUERY_PROJECT` | Yes | GCP project id that owns the BigQuery dataset |
+| `BIGQUERY_DATASET` | No | Dataset name holding the app tables (defaults to `bank_db`) |
 | `JWT_SECRET` | No | HS256 signing key for JWTs (defaults to a dev secret if omitted) |
 
-The app will raise a clear error on startup if `MONGO_URI` is missing.
+The app will raise a clear error on startup if `BIGQUERY_PROJECT` is missing.
 
-### MongoDB Atlas Network Access
+### BigQuery Access
 
-When deploying to a cloud host (e.g. Render), you must whitelist the host's IP in **MongoDB Atlas → Network Access**.
+Authentication uses a **service account** rather than IP allowlisting.
 
-- **Development / demo**: Allow Access from Anywhere (`0.0.0.0/0`) — acceptable for course projects with no real user data.
-- **Production**: Add only your host's static outbound IP. Using `0.0.0.0/0` in production leaves the cluster exposed to brute-force attempts — the only protection is your Atlas password.
+1. In **GCP → IAM & Admin → Service Accounts**, create a service account and grant it **BigQuery Data Editor** (read/write rows) and **BigQuery Job User** (run queries) on the project.
+2. Create a JSON key for that account and download it.
+3. Point `GOOGLE_APPLICATION_CREDENTIALS` at the key file's absolute path.
+
+- **Development / demo**: a single service-account key on your machine is sufficient.
+- **Production**: prefer workload identity / attached service accounts over long-lived JSON keys, and scope the account to only the dataset it needs.
 
 ---
 
@@ -87,7 +96,7 @@ When deploying to a cloud host (e.g. Render), you must whitelist the host's IP i
 
 **Services (`nonprofit_service.py`, `auth_service.py`, etc.)** — Business rules. Validates inputs, enforces RBAC (platform admin vs nonprofit user), aggregates dashboard data, coordinates CSV import, and triggers PDF generation.
 
-**Repositories (`*_repo.py`)** — Database only. Each repository gets the MongoDB database handle in its `__init__` and exposes clean methods for the service layer to call. No query logic exists anywhere outside these files.
+**Repositories (`*_repo.py`)** — Database only. Each repository builds parameterized BigQuery SQL and calls the shared helpers in `db/database.py` (`query`, `query_one`, `insert_row`, `update_row`, `dml`, `next_id`). Reads return plain dicts and writes use `INSERT`/`UPDATE`/`MERGE` DML, so no query logic exists anywhere outside these files.
 
 ### Authentication and Roles
 
@@ -102,18 +111,22 @@ When deploying to a cloud host (e.g. Render), you must whitelist the host's IP i
 
 ### Integer IDs
 
-MongoDB generates a random `ObjectId` as `_id` by default. This app keeps integer IDs (`user_id`, `nonprofit_id`, `program_id`, etc.) for a stable API contract with the frontend. A `counters` collection tracks the last-used integer per collection and is incremented atomically using `find_one_and_update` with `$inc`.
+BigQuery has no auto-increment column. This app keeps integer IDs (`user_id`, `nonprofit_id`, `program_id`, etc.) for a stable API contract with the frontend, generated by `next_id()` in `db/database.py` as `COALESCE(MAX(id), 0) + 1`. This preserves the integer-ID contract without a separate counters table. Note: `MAX+1` is not safe under concurrent writers — it is correct for this demo's single-writer load, not high-concurrency production writes.
 
-### Data Model (MongoDB Collections)
+### Why DML instead of the streaming API
 
-| Collection | Purpose |
-|------------|---------|
+Rows written with BigQuery's streaming insert API sit in a streaming buffer and cannot be `UPDATE`-d or `DELETE`-d for up to ~90 minutes. This app frequently inserts a row and mutates it moments later (e.g. create a nonprofit, then upsert its metrics), so every write uses an `INSERT`/`UPDATE`/`MERGE` DML statement, whose rows are immediately queryable and mutable.
+
+### Data Model (BigQuery Tables)
+
+| Table | Purpose |
+|-------|---------|
 | `users` | Login accounts (`role`, `nonprofit_id`, password hash) |
 | `nonprofits` | Organization profile (name, slug, mission, location) |
 | `programs` | Programs per nonprofit (status, participants, budget) |
 | `nonprofit_metrics` | KPI snapshot per nonprofit (donors, funding, email engagement, computed highlights) |
+| `nonprofit_weekly_metrics` | Weekly KPI snapshots per nonprofit (6-week history for trends and WoW comparisons) |
 | `donors` | Individual donor records (name, email, donation amount) |
-| `counters` | Auto-increment integer IDs per collection |
 
 ---
 
@@ -172,6 +185,13 @@ Users can be soft-deleted (`is_deleted`, `deleted_at`). Soft-deleted accounts ca
 
 ## Seed Data
 
+First-time setup only — create the dataset and tables (idempotent):
+
+```bash
+cd bank_app/backend
+uv run python setup_bigquery.py
+```
+
 Load demo nonprofits, programs, donors, metrics, and users:
 
 ```bash
@@ -192,8 +212,9 @@ uv run python seed_nonprofits.py
 
 ```bash
 cd bank_app/backend
-cp .env.example .env        # then fill in MONGO_URI (and optionally JWT_SECRET)
+cp .env.example .env        # then fill in BIGQUERY_PROJECT + GOOGLE_APPLICATION_CREDENTIALS (and optionally JWT_SECRET)
 uv sync                     # install dependencies
+uv run python setup_bigquery.py    # first run only: create dataset + tables
 uv run python seed_nonprofits.py   # optional: load demo data
 uv run python run.py        # starts at http://127.0.0.1:5000
 ```

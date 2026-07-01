@@ -4,7 +4,7 @@ from datetime import date, timedelta
 
 from werkzeug.security import generate_password_hash
 
-from db.database import get_mongo_db
+from db.database import truncate
 from repositories.donor_repo import DonorRepo
 from repositories.metrics_repo import MetricsRepo
 from repositories.nonprofit_repo import NonprofitRepo
@@ -255,9 +255,11 @@ def backfill_weekly_metrics():
 
 
 def main():
-    db = get_mongo_db()
-    for coll in ("donors", "programs", "nonprofit_metrics", "nonprofit_weekly_metrics", "nonprofits"):
-        db[coll].delete_many({})
+    # Clear the data tables before re-seeding. `users` is intentionally NOT
+    # truncated so existing logins (e.g. the platform admin) are preserved and
+    # reconciled below by email.
+    for tbl in ("donors", "programs", "nonprofit_metrics", "nonprofit_weekly_metrics", "nonprofits"):
+        truncate(tbl)
 
     nonprofit_repo = NonprofitRepo()
     program_repo = ProgramRepo()
